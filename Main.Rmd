@@ -1,0 +1,841 @@
+---
+title: "Construindo um container com APPTAINER para executar scripts R em um cluster com SLURM"
+author: "Elaine"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    number_sections: true
+    toc_depth: 4
+    toc_float: true
+    collapsed: true
+    smooth_scroll: true
+    highlith: zenburn
+    theme: dark
+---
+
+```{r setup, include=FALSE}
+if (requireNamespace("thematic")) 
+  thematic::thematic_rmd(font = "auto")
+```
+
+# Construindo um container com APPTAINER para executar scripts R em um cluster com SLURM
+
+Há algum tempo atrás, na verdade há aproximadamente um ano atrás (janeiro de 2022), eu precisei construir um container usando SINGULARITY para executar meus jobs no cluster da UFSCar. Fiz um tutorial sobre e ele foi publicado [aqui](). No entanto, o SINGULARITY passou agora a se chamar APPTAINER e eu precisei fazer atualizações no meu projeto, de modo que se tornou necessário atualizar tudo.
+
+Como sofri um pouco tentando fazer todos esses ajustes, decidi escrever este tutorial para ajudar aquelas pessoas que talvez estejam sofrendo com os mesmos problemas. Uma das coisas que mais pegaram durante a configuração das receitas para construção dos containters foi a instalação do pacote *rJava*. Depois de uns 3 dias eu achei um jeito de instalar tudo o que era necessário, e do modo correto, para que o *rJava* funcionase corretamente. Notei, nos fóruns onde pesquisei, que muita gente tem apanhando com esse problema, então espero que este tutorial seja útil a todos.
+
+## Conteúdo do container
+
+O container que vamos construir aqui vai ser criado em uma cadeia. Ele estará habilitado com:
+
+- Ubuntu
+- Rclone
+- Java 8
+- Python 3.10
+- R Base 4.2
+- Instalação de pacotes R via apt-get
+- Instalação de pacotes R via R
+
+A construção deve ocorrer nessa ordem, caso contrário podemos ter problemas. O último passo vai ser copiar o seu projeto do R para dentro do container e executá-lo. 
+
+
+## Construindo o container do Ubuntu
+
+Para simplificar o trabalho, vamos criar containers separados para cada software, assim se tivermos problemas com um deles, não será necessário construir o container inteiro novamente. Fazendo tudo modular, o gerenciamento também fica mais fácil. Conteúdo da primeira receita:
+
+```
+Bootstrap: docker
+
+From: ufscar/ubuntu_ompi:latest
+
+ 
+
+%post
+
+echo "Instalando Ubuntu"
+
+apt-get update
+
+apt-get install -y build-essential
+
+apt-get  install -y software-properties-common
+
+add-apt-repository universe multiverse
+
+apt-get update
+
+apt update -qq
+
+apt-get install -y rclone
+
+apt install -y cmake
+
+gcc --version
+
+apt-get install -y aptitude
+
+apt-get install -y zlib1g-dev
+
+apt-get install -y libc6
+
+apt-get install -y wget nano
+
+apt-get install -y libblas3 libblas-dev liblapack-dev liblapack3 curl
+
+apt-get install -y gcc fort77
+
+aptitude install -y g++
+
+aptitude install -y xorg-dev
+
+aptitude install -y libreadline-dev
+
+aptitude install -y gfortran
+
+gfortran --version
+
+apt-get install -y libssl-dev libxml2-dev libpcre3-dev liblzma-dev libbz2-dev libcurl4-openssl-dev 
+
+apt-get install -y libhdf5-dev hdf5-helpers
+
+apt-get install -y libgmp3-dev
+
+apt-get install -y libsodium-dev 
+
+apt-get install -y libudunits2-dev 
+
+sudo apt install -y libncurses5-dev libgdbm-dev libnss3-dev libffi-dev libsqlite3-dev
+
+echo " "
+
+lsb_release -a
+
+%test
+
+echo $(whoami)
+
+echo " "
+```
+
+No meu caso eu preciso usar uma IMAGEM do Ubuntu que é específica da UFSCar. No seu caso, você precisa conferir com o admistrador do sistema do cluster qual é essa imagem, o nome, etc. Depois, basta alterar ali na linha FROM.
+
+Tudo o que está dentro do %POST são comandos de instalação automáticos do linux. O *-y* indica que estamos dando YES para todas as dependências necessárias serem instaladas.
+
+Crie o arquivo e salve com o nome da distribuição linux que você estará usando. No meu caso salvei como "ubuntu.txt". Agora para construir o container, você deve entrar no terminal e entrar na pasta onde salvou o arquivo "ubuntu.txt". Por exemplo:
+
+
+```
+cd Documentos
+cd Containters
+
+```
+
+Agora vamos executar o comando:
+
+```
+sudo apptainer build -F ubuntu.sif ubuntu.txt
+
+```
+
+No meu caso, vai ficar da seguinte forma:
+
+```
+elaine@elaine:~$ cd Documentos/
+elaine@elaine:~/Documentos$ cd Rpubs-AppTainer/
+elaine@elaine:~/Documentos/Rpubs-AppTainer$ sudo apptainer build -F ubuntu.sif ubuntu.txt
+```
+
+Para ter certeza de que o container foi criado corretamente, verifique as últimas linhas que aparecerão no console, devem estar parecidas com estas:
+
+```
++ echo  
++ lsb_release -a
+No LSB modules are available.
+Distributor ID:	Ubuntu
+Description:	Ubuntu 22.04.1 LTS
+Release:	22.04
+Codename:	jammy
+INFO:    Adding testscript
+INFO:    Running testscript
+root
+INFO:    Creating SIF file...
+INFO:    Build complete: ubuntu.sif
+```
+
+Se houver algum problema com a construção do container, vai aparecer ai e então teremos de googlar para encontrar uma solução.
+
+
+## Construindo o container Java
+
+O container Java será construido dentro do container do UBUNTU. A receita é a seguinte:
+
+
+```
+Bootstrap: localimage
+
+From: ubuntu.sif
+
+IncludeCmd: yes
+
+ 
+
+%post
+
+echo " "
+
+echo UPDATE
+
+apt-get update 
+
+
+echo TIMEZONE 
+
+ln -fs /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime 
+
+export TZ=America/Sao_Paulo
+
+echo " "
+
+
+echo " "
+
+echo INSTALANDO O JAVA 8
+
+apt-get -y install openjdk-8-jdk
+
+echo ""
+
+java -version
+
+
+echo ""
+
+update-alternatives --list java
+
+
+echo " "
+
+java_8_path=$(update-alternatives --list java | grep 'java-8-openjdk' | head -1)
+if [ -n "$java_8_path" ]; then
+    update-alternatives --set java "$java_8_path" || echo "darn"
+else
+    echo "could not find java8 in alternatives list" 1>&2
+fi
+
+echo " "
+
+java -version
+
+echo " "
+
+javac -version
+
+```
+
+
+Note que estou usando *From: ubuntu.sif* na receita! Vamos gerar um novo container agora contendo o ubuntu e java. No mesmo diretório digite:
+
+```
+sudo apptainer build -F java.sif java-8.txt
+```
+
+Observe as últimas linhas da construção. Elas devem estar parecidas com estas:
+
+```
++ java -version
+openjdk version "1.8.0_352"
+OpenJDK Runtime Environment (build 1.8.0_352-8u352-ga-1~22.04-b08)
+OpenJDK 64-Bit Server VM (build 25.352-b08, mixed mode)
++ echo  
++ javac -version
+javac 1.8.0_352
+INFO:    Creating SIF file...
+INFO:    Build complete: java.sif
+```
+
+Dessa forma o container JAVA.SIF foi criado sem problema algum.
+
+
+## Construindo o container com o Python
+
+O próximo passo é criar um container com o ubuntu, java e python. A receita é:
+
+
+```
+Bootstrap: localimage
+
+From: java.sif
+
+IncludeCmd: yes
+ 
+
+%post
+
+echo " "
+python3 --version
+
+echo " "
+apt update && apt upgrade -y
+
+echo " "
+apt-get install software-properties-common -y
+
+echo " "
+add-apt-repository ppa:deadsnakes/ppa
+
+echo "Instalando python"
+apt-get install python3.10 -y
+
+echo "Instalando pip"
+apt-get install python3-pip -y
+
+echo "Instalando o sickit learn"
+apt-get install python3-sklearn python3-sklearn-lib -y
+
+echo "Instalando o pandas"
+pip install pandas
+
+echo "Instalando o numpy"
+pip install numpy
+
+echo " "
+python3 --version
+```
+
+
+Aqui estou usando *From: java.sif* pois este container já possui tanto o ubuntu quanto o java. Agora vamos executar o seguinte comando.
+
+
+```
+sudo apptainer build -F python.sif python.txt
+```
+
+Ao final da construção você deve ver algo como:
+
+```
++ echo  
++ python3 --version
+Python 3.10.6
+INFO:    Creating SIF file...
+INFO:    Build complete: python.sif
+```
+
+Pronto! Mais um container criado com sucesso.
+
+
+## Construindo o container com o R Base
+
+Agora é a vez de criarmos o container que conterá o básico do R. Por qual motivo crio tantos containters? Simples, se houver problema em um, eu não preciso recomeçar absolutamente tudo do zero. Basta pegar a partir do container que quero. Por exemplo, se agora durante a criação do R tivermos problemas, basta tentarmos resolver. O container do ubuntu e do Java se mantem intactos, não precisamos mexer neles. Esta é a receita:
+
+```
+Bootstrap: localimage
+
+From: python.sif
+
+IncludeCmd: yes
+
+ 
+
+%environment
+
+R_VERSION=4.2.0
+
+export R_VERSION 
+
+R_CONFIG_DIR=/etc/R/
+
+export R_CONFIG_DIR
+
+export LC_ALL=C
+
+export lib=$lib
+
+ 
+
+%labels
+
+Author Elaine Cecilia Gatto Cissa
+
+Version v.0.0.1
+
+R_Version 4.2.0
+
+build_date 2023 January 20
+
+R_bioconductor True
+
+ 
+
+%apprun R
+
+exec R "$@"
+
+ 
+
+%apprun Rscript
+
+exec Rscript "$@"
+
+ 
+
+%post
+
+echo " "
+echo
+apt-get install -y r-api-4.0
+
+
+echo " "
+echo Add the signing key by Michael Rutter for these repos
+wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc | tee -a /etc/apt/trusted.gpg.d/cran_ubuntu_key.asc
+
+
+echo " "
+echo INSTALLING HELPER PACKAGES
+apt install -y --no-install-recommends software-properties-common dirmngr
+
+
+echo " "
+echo ADD THE R.4.2.0 REPOSITORY FROM CRAM
+add-apt-repository 'deb https://cloud.r-project.org/bin/linux/ubuntu jammy-cran40/'
+
+
+echo " "
+echo INSTALLING R
+apt install -y --no-install-recommends r-base-core
+
+
+echo " "
+R --version
+```
+
+
+Salvei o arquivo da receita com o nome R-base.txt. Note que estou usando *From: python.sif* na receita! Vamos gerar um novo container agora contendo o ubuntu, java e python. No mesmo diretório digite:
+
+```
+sudo apptainer build -F R-base.sif R-base.txt
+```
+
+
+Esse processo de instalação do R pode demorar mais que o do ubuntu e do java. Novamente, vamos conferir as últimas linhas.
+
+```
+INFO:    Adding labels
+INFO:    Adding environment to container
+INFO:    Creating SIF file...
+INFO:    Build complete: R-base.sif
+```
+
+
+## Instalando os pacotes no container R-base
+
+O passo 6 consiste em instalar os pacotes R no container criado anteriormente. Faço dessa forma pois assim, se houver algum problema com algum pacote, pelo menos o ambiente R já está criado! Segue a receita. Lembre-se de salvá-la na mesma pasta que as outras e com a extensão txt.
+
+```
+Bootstrap: localimage
+
+From: R-Base.sif
+
+IncludeCmd: yes
+
+%post
+
+ 
+echo " "
+echo INSTALLING PACKAGES FROM UBUNTU
+
+echo " ====================================================== "
+echo DEVTOOLS
+apt-get install -y r-cran-devtools
+
+
+echo " ====================================================== "
+echo DEVTOOLS
+apt-get install -y r-cran-catools
+
+
+echo " ====================================================== "
+echo DEVTOOLS
+apt-get install -y r-cran-caret
+
+
+echo " ====================================================== "
+echo OPENSSOL
+apt-get install -y r-cran-openssl
+
+
+echo " ====================================================== "
+echo RJAVA
+apt-get install -y r-cran-rjava
+
+
+echo " ====================================================== "
+echo TIDYVERSE
+apt-get install -y r-cran-tidyverse
+
+
+echo " ====================================================== "
+echo IGRAPH
+apt-get install -y r-cran-igraph
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-kohonen
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-stringr
+
+echo " ====================================================== "
+echo 
+apt-get install -y r-cran-foreign
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y r-cran-lattice
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y r-cran-doparallel
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-parallelly
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-foreach
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y r-cran-foreign
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-stringr
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-cluster
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-lme4
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-ggplot2
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-ggdendro
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-ggally
+
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-ape
+
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-reshape2
+
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-dendextend
+
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-pvclust
+
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-plyr
+
+
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-dplyr
+
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y  r-cran-xml
+
+
+echo " ====================================================== "
+echo 
+apt-get install -y r-cran-rjava
+```
+
+Digite o seguinte comando para criar o container:
+
+```
+sudo apptainer build -F R-Env1.sif R-cran-ubuntu.txt 
+```
+
+Depois de compilado, verifique
+
+```
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+r-cran-rjava is already the newest version (1.0-6-1).
+0 upgraded, 0 newly installed, 0 to remove and 15 not upgraded.
+INFO:    Creating SIF file...
+INFO:    Build complete: R-Env1.sif
+```
+
+## Instalando pacotes usando o R
+
+Quando não é possível instalar um pacote R usando o apt-get do ubuntu, então ele deve ser istalado usando o comando install.packages() do R. Segue a receita:
+
+```
+Bootstrap: localimage
+
+From: R-Env1.sif
+
+IncludeCmd: yes
+
+%post
+
+ 
+echo " "
+
+
+echo INSTALLING PACKAGES FROM CRAN
+
+
+R --slave -e 'install.packages("AggregateR", repos="https://cran.rstudio.com/",  dependencies = TRUE, lib = "/usr/lib/R/library")' 
+
+R --slave -e 'install.packages("philentropy", repos="https://cran.rstudio.com/",  dependencies = TRUE, lib = "/usr/lib/R/library")' 
+
+R --slave -e 'install.packages("RWeka", repos="https://cran.rstudio.com/",  dependencies = TRUE, lib = "/usr/lib/R/library")' 
+
+R --slave -e 'install.packages("mldr", repos="https://cran.rstudio.com/", dependencies = TRUE, lib = "/usr/lib/R/library")'
+
+R --slave -e 'install.packages("utiml", repos="https://cran.rstudio.com/", dependencies = TRUE, lib = "/usr/lib/R/library")'
+
+
+rm -rf /var/lib/apt/lists/*
+```
+
+Digite o seguinte comando para criar o container:
+
+```
+sudo apptainer build -F R-Env2.sif R-packages.txt 
+```
+
+Depois de compilado, verifique
+
+```
+e_binary-amd64_Packages.lz4
+INFO:    Creating SIF file...
+INFO:    Build complete: R-Env2.sif
+```
+
+## Copiando seus arquivos para dentro do Container
+
+Agora que o container está pronto podemos copiar nossos arquivos lá pra dentro. Aqui é necessário fazer algumas mudanças. Primeiro, faça uma cópia do seu projeto para outro lugar. Por exemplo, se ele está na pasta Documentos, copie-o para a pasta Downloads. No meu caso, meu projeto está na pasta raíz, então copiei-o para a pasta Documentos.
+
+Depois de fazer isso, você deve checar todos os caminhos de pasta dentro do seu projeto. Por exemplo, se você está usando ~/NomeDoProjeto, você deverá retirar o til pois isso não vai funcionar dentro do container. Tudo o que é necessário para executar seu projeto deve estar dentro dessa pasta, incluindo os datasets. Talvez você tenha que modificar algo no seu código, verifique isso antes de continuar.
+
+Depois que copiei todo o meu projeto para a pasta Documentos, eu abri os scripts R no SublimeText e substitui o caminho da pasta, isto é, meus scripts estavam configurados com *~/Chains-Hybrid-Partition* e então mudei para */Chains-Hybrid-Partition*. Feito isso, criei a receita para copiar os arquivos, vejam:
+
+```
+Bootstrap: localimage
+
+From: R-Env2.sif
+ 
+
+%post
+
+ 
+
+%files
+
+/home/biomal/Documentos/Chains-Hybrid-Partition/* /Chains-Hybrid-Partition 
+
+%test
+
+echo "CHECKING DIR" 
+
+ls -l /Chains-Hybrid-Partition
+
+
+echo " CHECKING DEV SHM" 
+
+ls -l /dev/shm
+
+```
+
+No meu caso, poara construir o container eu digito:
+
+```
+sudo apptainer build -F CHP.sif CopyFiles.txt 
+```
+
+Vocês vão ver algo parecido com isto na saída do terminal:
+
+```
+r$ sudo apptainer build -F CHP.sif CopyFiles.txt 
+INFO:    Starting build...
+INFO:    Verifying bootstrap image R-Env2.sif
+WARNING: integrity: signature not found for object group 1
+WARNING: Bootstrap image could not be verified, but build will continue.
+INFO:    Copying /home/biomal/Documentos/Chains-Hybrid-Partition/* to /Chains-Hybrid-Partition
+INFO:    Running post scriptlet
+INFO:    Adding testscript
+INFO:    Running testscript
+CHECKING DIR
+total 2248
+-rw-rw-r-- 1 root root     205 Jan 25 10:42 Chains-Hybrid-Partition.Rproj
+drwxrwxr-x 2 root root    4096 Jan 25 10:43 Datasets
+-rwxrwxr-x 1 root root 2214355 Jan 25 10:43 HPML-ALL-VERSIONS.png
+-rw-rw-r-- 1 root root   35149 Jan 25 10:43 LICENSE
+drwxrwxr-x 2 root root    4096 Jan 25 10:43 R
+-rw-rw-r-- 1 root root   10613 Jan 25 10:43 README.md
+drwxrwxr-x 5 root root    4096 Jan 25 10:43 Utils
+drwxrwxr-x 6 root root    4096 Jan 25 10:43 config-files
+-rwxrwxr-x 1 root root   10789 Jan 25 10:43 datasets-original.csv
+drwxrwxr-x 2 root root    4096 Jan 25 10:42 jaccard-3
+ CHECKING DEV SHM
+total 0
+INFO:    Creating SIF file...
+INFO:    Build complete: CHP.sif
+```
+
+
+## Usando o container
+
+
+Um jeito interessante de "entrar" no container é usando o shell. Digite:
+
+
+```
+ sudo apptainer shell nome-do-container.sif
+```
+
+Vai aparecer escrito no terminal *Apptainer>*. Digite R e aperte enter, com isso o R será inicializado.
+
+```
+Apptainer> R
+
+R version 4.2.2 Patched (2022-11-10 r83330) -- "Innocent and Trusting"
+Copyright (C) 2022 The R Foundation for Statistical Computing
+Platform: x86_64-pc-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> 
+```
+
+A partir daí você pode verificar um monte de outras coisas! Você pode usar o shell com quaisquer um dos containers que foram criados anteriormente. Para sair, digite q() e depois exit.
+
+```
+> q()
+Save workspace image? [y/n/c]: n
+Apptainer> exit
+exit
+```
+
+Para executar o seu código é um pouco mais complexo. Primeiro precisamos instanciar o container e só depois usá-lo. Digite
+
+```
+sudo apptainer instance start nome.sif NOME-DA-INSTANCIA
+```
+
+No meu caso:
+
+```
+sudo apptainer instance start CHP.sif CHAINS
+```
+
+Para parar a execução da instância digite:
+
+```
+sudo apptainer instance stop NOME-DA-INSTANCIA
+```
+
+No meu caso:
+
+```
+sudo apptainer instance stop CHAINS
+```
+
+
+Como no meu caso eu quero usar o rclone também, então a instanciação é um pouco diferente. 
+
+```
+sudo apptainer instance start --bind ~/.config/rclone/:/root/.config/rclone CHP.sif CHAINS
+```
+
+
+O que estou fazendo nessa linha é basicamente copiando as configurações do rclone da minha máquina para ser utilizadas dentro do container. Agora com a instância rodando, vou executar meu script R
+
+```
+sudo apptainer run --app Rscript instance://CHAINS /Chains-Hybrid-Partition/R/start.R "/Chains-Hybrid-Partition/config-files/python/jaccard-3/python-j3-GpositiveGO.csv"
+```
+
+Pode ser que nesse momento você receba algum erro pois às vezes as pastas se organizam um pouco diferente do container. Então, você terá que ir até o seu código, fazer os ajustes e copiar novamente os arquivos.
+
+Pode ser que depois de usar o rclone com o apptainer você não o consiga usar na sua máquina. Neste caso, antes de usá-lo, digite no terminal:
+
+```
+sudo chown -R [nome-da-maquina] ~/.config
+```
+
+# FINALIZANDO
+
+Espero que este tutorial lhe tenha sido útil. Por favor, compartilhe com outras pessoas.
+
+
+contato: elainececiliagatto@gmail.com
+
+
+
+
+
+
+
+
